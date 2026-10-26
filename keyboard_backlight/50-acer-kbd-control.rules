@@ -1,0 +1,11 @@
+// Allow only the active local account to run the fixed, root-owned keyboard
+// light helper. The helper accepts only levels 0..5 and fixed operations.
+polkit.addRule(function(action, subject) {
+    if (action.id === "org.freedesktop.policykit.exec" &&
+        action.lookup("program") === "/usr/local/libexec/acer-kbd-control" &&
+        action.lookup("user") === "root" &&
+        subject.user === "karthi" &&
+        subject.local && subject.active) {
+        return polkit.Result.YES;
+    }
+});

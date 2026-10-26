@@ -1,0 +1,96 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+# Root-owned helper for the Acer Aspire Lite AL15-52 white keyboard light.
+# Only the two firmware methods verified on this machine are used:
+# 0x3D reads the current level; 0x27 sets a level from 0 through 5.
+
+usage() {
+    printf 'Usage: acer-kbd-control {status|on|off|up|down|toggle|set 0..5}\n' >&2
+    exit 2
+}
+
+if (( $# < 1 || $# > 2 )); then
+    usage
+fi
+
+operation=$1
+case "$operation" in
+    status|on|off|up|down|toggle)
+        (( $# == 1 )) || usage
+        ;;
+    set)
+        (( $# == 2 )) || usage
+        [[ $2 =~ ^[0-5]$ ]] || usage
+        ;;
+    *) usage ;;
+esac
+
+# Serialize read-modify-write operations when keys are pressed quickly.
+exec 9>/run/lock/acer-kbd-control.lock
+/usr/bin/flock -x 9
+
+if [[ ! -e /proc/acpi/call ]]; then
+    /usr/bin/modprobe acpi_call
+fi
+
+call_wmbb() {
+    local method=$1 argument=$2 response
+    printf '\\_SB_.WMI_.WMBB 0 %s %s\n' "$method" "$argument" > /proc/acpi/call
+    response=$(/usr/bin/tr -d '\000' < /proc/acpi/call)
+    printf '%s' "$response"
+}
+
+read_level() {
+    local response level
+    response=$(call_wmbb 0x3D 0)
+    [[ $response =~ ^0x[0-9a-fA-F]+$ ]] || {
+        printf 'Unexpected brightness response: %s\n' "$response" >&2
+        exit 1
+    }
+    level=$((response))
+    (( level >= 0 && level <= 5 )) || {
+        printf 'Brightness outside expected 0..5 range: %s\n' "$level" >&2
+        exit 1
+    }
+    printf '%d' "$level"
+}
+
+set_level() {
+    local level=$1 response
+    [[ $level =~ ^[0-5]$ ]] || usage
+    response=$(call_wmbb 0x27 "$level")
+    [[ $response == 0x27 ]] || {
+        printf 'Keyboard light command failed: %s\n' "$response" >&2
+        exit 1
+    }
+    printf '%s/5\n' "$level"
+}
+
+case "$operation" in
+    status)
+        printf '%s/5\n' "$(read_level)"
+        ;;
+    set)
+        set_level "$2"
+        ;;
+    off)
+        set_level 0
+        ;;
+    on)
+        current=$(read_level)
+        if (( current == 0 )); then set_level 1; else printf '%s/5\n' "$current"; fi
+        ;;
+    up)
+        current=$(read_level)
+        if (( current < 5 )); then set_level "$((current + 1))"; else printf '5/5\n'; fi
+        ;;
+    down)
+        current=$(read_level)
+        if (( current > 0 )); then set_level "$((current - 1))"; else printf '0/5\n'; fi
+        ;;
+    toggle)
+        current=$(read_level)
+        if (( current == 0 )); then set_level 1; else set_level 0; fi
+        ;;
+esac
